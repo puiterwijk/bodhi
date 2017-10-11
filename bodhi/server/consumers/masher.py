@@ -1086,7 +1086,10 @@ class MashThread(threading.Thread):
                       self.tag)
         if returncode != 0:
             self.log.error('There was a problem running mash (%d)' % returncode)
-            self.log.error(out)
+            if not config.get('use_pungi_in_bodhi'):
+                # If you use pungi, it's stdout is all logged elsewhere and this
+                # is just duplicated
+                self.log.error(out)
             self.log.error(err)
             raise Exception('mash failed')
         else:
