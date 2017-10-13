@@ -332,49 +332,42 @@ class MasherThread(threading.Thread):
                 self.wait_for_mash(mash_thread)
 
                 uinfo.insert_updateinfo(self.path)
-                #uinfo.cache_repodata()
-
-            # Do the following if we are not using pungi
-            if not config.get('use_pungi_in_bodhi'):
-                # Compose OSTrees from our freshly mashed repos
-                if config.get('compose_atomic_trees'):
-                    self.compose_atomic_trees()
 
             if not self.skip_mash:
                 self.sanity_check_repo()
                 self.stage_repo()
 
                 # Wait for the repo to hit the master mirror
-     #          self.wait_for_sync()
+                self.wait_for_sync()
 
-     #      # Send fedmsg notifications
-     #      self.send_notifications()
+            # Send fedmsg notifications
+            self.send_notifications()
 
-     #      # Update bugzillas
-     #      self.modify_bugs()
+            # Update bugzillas
+            #self.modify_bugs()
 
-     #      # Add comments to updates
-     #      self.status_comments()
+            # Add comments to updates
+            self.status_comments()
 
-     #      # Announce stable updates to the mailing list
-     #      self.send_stable_announcements()
+            # Announce stable updates to the mailing list
+            #self.send_stable_announcements()
 
-     #      # Email updates-testing digest
-     #      self.send_testing_digest()
+            # Email updates-testing digest
+            #self.send_testing_digest()
 
-     #      self.success = True
-     #      self.remove_state()
-     #      self.unlock_updates()
+            self.success = True
+            #self.remove_state()
+            #self.unlock_updates()
 
-     #      self.check_all_karma_thresholds()
-     #      self.obsolete_older_updates()
+            self.check_all_karma_thresholds()
+            self.obsolete_older_updates()
 
         except:
             self.log.exception('Exception in MasherThread(%s)' % self.id)
             self.save_state()
             raise
-   #    finally:
-   #        self.finish(self.success)
+        finally:
+            self.finish(self.success)
 
     def load_updates(self):
         self.log.debug('Loading updates')
@@ -735,13 +728,14 @@ class MasherThread(threading.Thread):
     def sanity_check_repo(self):
         """Sanity check our repo.
 
+            - make sure we didn't compose a repo full of symlinks
             - sanity check our repodata
         """
         self.log.info("Running sanity checks on %s" % self.path)
 
-        # sanity check our repodata
         arches = os.listdir(os.path.join(self.path, 'compose', 'Everything'))
         for arch in arches:
+            # sanity check our repodata
             try:
                 if arch == 'source':
                     repodata = os.path.join(self.path, 'compose',
@@ -750,8 +744,39 @@ class MasherThread(threading.Thread):
                     repodata = os.path.join(self.path, 'compose',
                                             'Everything', arch, 'os', 'repodata')
                 sanity_check_repodata(repodata)
-            except Exception as e:
-                self.log.error("Repodata sanity check failed!\n%s" % str(e))
+            except Exception:
+                self.log.exception("Repodata sanity check failed!")
+                raise
+
+            # make sure that pungi didn't symlink our packages 
+            return True
+            try:
+                if arch == 'source':
+                    dirs = [('tree', 'Packages')]
+                else:
+                    dirs = [('debug', 'tree', 'Packages'), ('os', 'Packages')]
+
+                # Example of full path we are checking: self.path/compose/Everything/os/Packages/s/something.rpm
+                for checkdir in dirs:
+                    checkdir = os.path.join(self.path, 'compose', 'Everything', arch, *checkdir)
+                    subdirs = os.listdir(checkdir)
+                    # subdirs is the self.path/compose/Everything/os/Packages/{a,b,c,...}/ dirs
+                    #
+                    # Let's check the first file in each subdir. If they are correct, we'll assume
+                    # the rest is correct
+                    # This is to avoid tons and tons of IOPS for a bunch of files put in in the
+                    # same way
+                    for subdir in subdirs:
+                        for checkfile in os.listdir(os.path.join(checkdir, subdir)):
+                            if not checkfile.endswith('.rpm'):
+                                continue
+                            if os.path.islink(os.path.join(checkdir, subdir, checkfile)):
+                                self.log.error('Pungi out directory contains at least one symlink at %s')
+                                raise Exception
+                            # We have checked the first rpm in the subdir
+                            break
+            except Exception:
+                self.log.exception('Unable to check pungi mashed repositories')
                 raise
 
         return True
@@ -777,10 +802,18 @@ class MasherThread(threading.Thread):
             force=True,
         )
         ## will need to fix mash_path here
-        mash_path = os.path.join(self.path, self.id)
-        arch = os.listdir(mash_path)[0]
+        mash_path = os.path.join(self.path, 'compose', 'Everything')
+        checkarch = None
+        # Find the first non-source arch to check against
+        for arch in os.listdir(mash_path):
+            if arch == 'source':
+                continue
+            checkarch = arch
+            break
+        if not checkarch:
+            raise Exception('Not found an arch to wait_for_sync with')
 
-        repomd = os.path.join(mash_path, arch, 'repodata', 'repomd.xml')
+        repomd = os.path.join(mash_path, arch, 'os', 'repodata', 'repomd.xml')
         if not os.path.exists(repomd):
             self.log.error('Cannot find local repomd: %s', repomd)
             return
@@ -1053,25 +1086,15 @@ class MashThread(threading.Thread):
         self.tag = tag
         self.log = log
         self.success = False
-        if not config.get('use_pungi_in_bodhi'):
-
-            mash_cmd = 'mash -o {outputdir} -c {config} -f {compsfile} {tag}'
-            mash_conf = config.get('mash_conf')
-            if os.path.exists(previous):
-                mash_cmd += ' -p {}'.format(previous)
-            self.mash_cmd = mash_cmd.format(outputdir=outputdir, config=mash_conf,
-                                            compsfile=comps, tag=self.tag).split()
-
-        else:  # We are going to use pungi in this run
-            # old composes are in the previous directory
-#           self.git_clone(git_url=, git_branch=self.tag, target_dir=)
-            #lastcompose = os.path.join(outputdir, '..', tag)
-            #pungi_cmd = "pungi-koji  --config={config} --old-composes={lastcompose} "
-            pungi_cmd = "pungi-koji  --config={config} "
-            pungi_cmd += "--no-label --target-dir={outputdir}"
-            pungi_conf = config.get('pungi_conf')
-            # We are using the same name so that no new changes required in the code
-            self.mash_cmd = pungi_cmd.format(config=pungi_conf, outputdir=outputdir)
+        # old composes are in the previous directory
+#       self.git_clone(git_url=, git_branch=self.tag, target_dir=)
+        #lastcompose = os.path.join(outputdir, '..', tag)
+        #pungi_cmd = "pungi-koji  --config={config} --old-composes={lastcompose} "
+        pungi_cmd = "pungi-koji  --config={config} "
+        pungi_cmd += "--no-label --target-dir={outputdir}"
+        pungi_conf = config.get('pungi_conf')
+        # We are using the same name so that no new changes required in the code
+        self.mash_cmd = pungi_cmd.format(config=pungi_conf, outputdir=outputdir)
 
         # Set our thread's "name" so it shows up nicely in the logs.
         # https://docs.python.org/2/library/threading.html#thread-objects
@@ -1086,10 +1109,7 @@ class MashThread(threading.Thread):
                       self.tag)
         if returncode != 0:
             self.log.error('There was a problem running mash (%d)' % returncode)
-            if not config.get('use_pungi_in_bodhi'):
-                # If you use pungi, it's stdout is all logged elsewhere and this
-                # is just duplicated
-                self.log.error(out)
+            self.log.error(out)
             self.log.error(err)
             raise Exception('mash failed')
         else:

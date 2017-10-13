@@ -36,9 +36,7 @@ class ExtendedMetadata(object):
     which is included in the `createrepo_c` package.
 
     """
-    def __init__(self, release, request, db, path):
-        self.updates_dir = path
-        log.debug('updateinfo updates dir = %s' % self.updates_dir)
+    def __init__(self, release, request, db, mashdir):
         self.request = request
         if request is UpdateRequest.stable:
             self.tag = release.stable_tag
@@ -63,9 +61,9 @@ class ExtendedMetadata(object):
             self.comp_type = cr.BZ2
 
         # Load from the cache if it exists
-        self.cached_repodata = os.path.join(self.updates_dir, self.tag +
-                                            '.repocache', 'repodata/')
-        if os.path.isfile(os.path.join(self.cached_repodata, 'repomd.xml')):
+        self.cached_updateinfo = os.path.join(mashdir, self.tag, 'work', 'global',
+                                              'updateinfo.xml')
+        if os.path.isfile(self.cached_updateinfo):
             log.info('Loading cached updateinfo.xml')
             self._load_cached_updateinfo()
         else:
@@ -83,29 +81,15 @@ class ExtendedMetadata(object):
 
     def _load_cached_updateinfo(self):
         """
-        Load the cached updateinfo.xml from '../{tag}.repocache/repodata'
+        Load the cached updateinfo.xml
         """
         seen_ids = set()
         from_cache = set()
         existing_ids = set()
 
-        # Parse the updateinfo out of the repomd
-        updateinfo = None
-        repomd_xml = os.path.join(self.cached_repodata, 'repomd.xml')
-        repomd = cr.Repomd()
-        cr.xml_parse_repomd(repomd_xml, repomd)
-        for record in repomd.records:
-            if record.type == 'updateinfo':
-                updateinfo = os.path.join(os.path.dirname(
-                    os.path.dirname(self.cached_repodata)),
-                    record.location_href)
-                break
-
-        assert updateinfo, 'Unable to find updateinfo'
-
         # Load the metadata with createrepo_c
-        log.info('Loading cached updateinfo: %s', updateinfo)
-        uinfo = cr.UpdateInfo(updateinfo)
+        log.info('Loading cached updateinfo: %s', self.cached_updateinfo)
+        uinfo = cr.UpdateInfo(self.cached_updateinfo)
 
         # Determine which updates are present in the cache
         for update in uinfo.updates:
@@ -235,7 +219,7 @@ class ExtendedMetadata(object):
 
                 # Build the URL
                 if rpm['arch'] == 'src':
-                    arch = 'source'
+                    arch = 'SRPMS'
                 elif rpm['arch'] in ('noarch', 'i686'):
                     arch = 'i386'
                 else:
@@ -269,49 +253,30 @@ class ExtendedMetadata(object):
 
         self.uinfo.append(rec)
 
-    def insert_updateinfo(self, repo):
-        fd, name = tempfile.mkstemp()
-        os.write(fd, self.uinfo.xml_dump().encode('utf-8'))
-        os.close(fd)
-        self.modifyrepo(name, repo)
-        os.unlink(name)
+    def insert_updateinfo(self, targetpath):
+        name = os.path.join(targetpath, 'work', 'global', 'updateinfo.xml')
+        with open(name, 'w') as fd:
+            fd.write(self.uinfo.xml_dump().encode('utf-8'))
+        self.modifyrepo(targetpath, name, 'updateinfo', 'xml')
 
-    def modifyrepo(self, filename, repo):
+    def modifyrepo(self, targetpath, sourcefile, filetype, extension):
         """Inject a file into the repodata for each architecture"""
-        repo_path = os.path.join(repo, 'compose', 'Everything')
-        for arch in os.listdir(repo_path):
-            if arch == 'source':
-                repodata = os.path.join(repo_path, arch, 'tree', 'repodata')
-            else:
-                repodata = os.path.join(repo_path, arch, 'os', 'repodata')
-            log.info('Inserting %s into %s', filename, repodata)
-            uinfo_xml = os.path.join(repodata, 'updateinfo.xml')
-            shutil.copyfile(filename, uinfo_xml)
+        for arch in os.listdir(os.path.join(targetpath, 'compose', 'Everything')):
+            repodir = 'tree' if arch == 'source' else 'os'
+
+            repodata = os.path.join(targetpath, 'compose', 'Everything', arch, repodir,
+                                    'repodata')
+
+            log.info('Inserting %s.%s into %s', filetype, extension, repodata)
+            target_file = os.path.join(repodata, '%s.%s' % (filetype, extension))
+            shutil.copyfile(sourcefile, target_file)
             repomd_xml = os.path.join(repodata, 'repomd.xml')
             repomd = cr.Repomd(repomd_xml)
-            uinfo_rec = cr.RepomdRecord('updateinfo', uinfo_xml)
-            uinfo_rec_comp = uinfo_rec.compress_and_fill(self.hash_type, self.comp_type)
-            uinfo_rec_comp.rename_file()
-            uinfo_rec_comp.type = 'updateinfo'
-            repomd.set_record(uinfo_rec_comp)
+            rec = cr.RepomdRecord(filetype, target_file)
+            rec_comp = rec.compress_and_fill(self.hash_type, self.comp_type)
+            rec_comp.rename_file()
+            rec_comp.type = 'updateinfo'
+            repomd.set_record(rec_comp)
             with file(repomd_xml, 'w') as repomd_file:
                 repomd_file.write(repomd.xml_dump())
-            os.unlink(uinfo_xml)
-
-    # caching repodata in this way doesn't make much sense. why not
-    # pick it up from the repodata file of the last run? 
-  ##def cache_repodata(self):
-  ##    repo_path = os.path.join(self.repo_path, 'compose', 'Everything')
-  ##    arch = os.listdir(repo_path)[0]  # Take the first arch
-  ##    if arch == 'source':
-  ##        repodata = os.path.join(repo_path, arch, 'tree', 'repodata')
-  ##    else:
-  ##        repodata = os.path.join(repo_path, arch, 'os', 'repodata')
-  ##    if not os.path.isdir(repodata):
-  ##        log.warning('Cannot find repodata to cache: %s' % repodata)
-  ##        return
-  ##    cache = self.cached_repodata
-  ##    if os.path.isdir(cache):
-  ##        shutil.rmtree(cache)
-  ##    shutil.copytree(repodata, cache)
-  ##    log.info('%s cached to %s' % (repodata, cache))
+            os.unlink(target_file)
