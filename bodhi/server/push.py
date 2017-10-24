@@ -53,10 +53,7 @@ def push(username, cert_prefix, **kwargs):
 
     lockfiles = defaultdict(list)
     locked_updates = []
-    if staging:
-        locks = '/var/cache/bodhi/mashing/MASHING-*'
-    else:
-        locks = '/mnt/koji/mash/updates/MASHING-*'
+    locks = '%s/MASHING-*' % config.get('mash_dir')
     for lockfile in glob.glob(locks):
         with file(lockfile) as lock:
             state = json.load(lock)
