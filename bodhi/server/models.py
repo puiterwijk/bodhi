@@ -1171,6 +1171,27 @@ class RpmPackage(Package):
     }
 
 
+class CritpathPackage(Base):
+    """
+    This model represents that a package is marked as critpath in a particular release.
+
+    Attributes:
+        package_id (int): A foreign key to the Package that this entry corresponds to.
+        release_id (int): A foreign key to the Release that this entry corresponds to.
+    """
+    package_id = Column(Integer, ForeignKey('packages.id'), primary_key=True)
+    release_id = Column(Integer, ForeignKey('releases.id'), primary_key=True)
+
+    @staticmethod
+    def is_critpath(package, release):
+        e = CritpathPackage.query.filter(
+            CritpathPackage.package_id == package.id
+        ).filter(
+            CritpathPackage.release_id == release.id
+        ).one_or_none()
+        return e is not None
+
+
 class Build(Base):
     """
     This model represents a specific build of a package.
@@ -1694,7 +1715,7 @@ class Update(Base):
             yield comment
 
     @staticmethod
-    def contains_critpath_component(builds, release_name):
+    def contains_critpath_component(builds, release):
         """
         Determine if there is a critpath component in the builds passed in.
 
@@ -1706,11 +1727,7 @@ class Update(Base):
         component
         """
         for build in builds:
-            # This function call is cached, so there is no need to optimize
-            # it here.
-            critpath_components = get_critpath_components(
-                release_name.lower(), build.package.type.value)
-            if build.package.name in critpath_components:
+            if CritpathPackage.is_critpath(release, build.package):
                 return True
 
         return False
@@ -1760,7 +1777,7 @@ class Update(Base):
         data['title'] = ' '.join([b.nvr for b in data['builds']])
         caveats = []
         data['critpath'] = cls.contains_critpath_component(
-            data['builds'], data['release'].name)
+            data['builds'], data['release'])
 
         # Create the Bug entities, but don't talk to rhbz yet.  We do that
         # offline in the UpdatesHandler fedmsg consumer now.
@@ -1882,7 +1899,7 @@ class Update(Base):
                     db.delete(b)
 
         data['critpath'] = cls.contains_critpath_component(
-            up.builds, up.release.name)
+            up.builds, up.release)
 
         del(data['builds'])
 

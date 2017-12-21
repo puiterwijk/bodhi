@@ -242,7 +242,6 @@ class memoized(object):
         return functools.partial(self.__call__, obj)
 
 
-@memoized
 def get_critpath_components(collection='master', component_type='rpm'):
     """
     Return a list of critical path packages for a given collection.
